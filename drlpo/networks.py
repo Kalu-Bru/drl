@@ -100,7 +100,7 @@ class Actor(nn.Module):
     """VGG-style policy network outputting a weight vector of size (m+1)."""
 
     def __init__(self, num_assets: int, window: int = 50,
-                 num_features: int = 4, dropout: float = 0.5):
+                 num_features: int = 4, dropout: float = 0.1):
         super().__init__()
         self.num_assets = num_assets
         self.window = window
@@ -109,6 +109,10 @@ class Actor(nn.Module):
         self.conv = _vgg_conv_stack(num_features)
         flat = _flat_dim(self.conv, num_features, window, num_assets)
 
+        # Dropout default lowered from the VGG-style 0.5 to 0.1.  The original
+        # 0.5 was an ImageNet-scale regulariser that, on this much smaller
+        # FC stack (~few-hundred-K params, no overfitting risk), squashed the
+        # actor into outputting near-static weights regardless of state.
         self.fc = nn.Sequential(
             nn.Linear(flat, 256, bias=True),
             nn.ReLU(inplace=True),
@@ -137,7 +141,7 @@ class Critic(nn.Module):
     """
 
     def __init__(self, num_assets: int, window: int = 50,
-                 num_features: int = 4, dropout: float = 0.5):
+                 num_features: int = 4, dropout: float = 0.1):
         super().__init__()
         self.num_assets = num_assets
         self.window = window

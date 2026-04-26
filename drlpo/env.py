@@ -138,21 +138,24 @@ class PortfolioEnv:
         y_assets = next_close / prev_close                # (m,)
         y_full = np.concatenate(([1.0], y_assets))        # (m+1,) cash first
 
-        # Weights at t+1 BEFORE re-balance (Eq. 10): W_t' = (Y * W_t) / (Y . |W_t|)
-        denom = float(np.dot(y_full, np.abs(self.weights)))
-        if denom <= 1e-12:
-            denom = 1e-12
-        w_evolved = (y_full * self.weights) / denom
+        # Wealth dynamics generalised to long/short (paper Eq. 12 in the
+        # long-only case).  The dollar P&L of any signed position w_i in an
+        # asset with relative price y_i is w_i (y_i - 1) regardless of sign,
+        # so the gross portfolio return is
+        #     gross = 1 + Σ_i w_i (y_i - 1) = 1 + <W, Y - 1>
+        # which equals <W, Y> exactly when Σ w_i = 1 (long-only with cash
+        # adding to one) and stays well-defined for any hedged or shorted W.
+        gross = 1.0 + float(np.dot(self.weights, y_full - 1.0))
+        gross_safe = max(gross, 1e-8)
+        # Pre-rebalance weight drift: each position's dollar value is
+        # w_i · y_i, so the new fractional weight is w_i y_i / gross.
+        w_evolved = (y_full * self.weights) / gross_safe
 
-        # Transaction cost (Eq. 11)  -- on risk assets (i=1..m)
+        # Transaction cost (Eq. 11) on the risk assets (cash is index 0)
         c_t = self.cost * float(np.sum(np.abs(w_evolved[1:] - new_weights[1:])))
         c_t = float(min(c_t, 0.999))
 
-        # Portfolio value update (Eq. 12)
-        log_y = np.log(np.clip(y_full, 1e-12, None))
-        # leverage vector Lambda is constant 1 (paper Section 2.7)
-        log_growth = float(np.dot(log_y, self.weights))
-        new_pv = self.portfolio_value * (1.0 - c_t) * float(np.exp(log_growth))
+        new_pv = self.portfolio_value * (1.0 - c_t) * gross_safe
         new_pv = max(new_pv, 1e-8)
 
         log_ret = float(np.log(new_pv / self.portfolio_value))

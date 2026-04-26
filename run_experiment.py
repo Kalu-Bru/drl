@@ -159,21 +159,51 @@ def run_one(spec, total_steps: int, device: str, do_multifactor: bool = True):
     plt.savefig(os.path.join(out_dir, "costs.png"), dpi=150)
     plt.close()
 
-    # Plot 4: training-curve regression (paper Figure 6)
+    # Plot 4: training-curve regression (paper Figure 6) + rolling mean
     if history.avg_daily_log_returns:
         ys = np.array(history.avg_daily_log_returns)
-        xs = np.arange(len(ys))
+        xs = np.arange(len(ys)) * EPISODE_STEPS  # in training steps
         if len(xs) >= 2:
             slope, intercept = np.polyfit(xs, ys, 1)
+            window = max(2, min(50, len(ys) // 10))
+            rolling = pd.Series(ys).rolling(window, min_periods=1).mean().values
             plt.figure(figsize=(8, 5))
-            plt.plot(xs, ys, ".", alpha=0.4, label="episode avg log-return")
-            plt.plot(xs, slope * xs + intercept, "r-",
-                     label=f"slope={slope:.2e}")
+            plt.plot(xs, ys, ".", alpha=0.3, label="episode avg log-return")
+            plt.plot(xs, rolling, "-", color="C1",
+                     label=f"{window}-episode rolling mean")
+            plt.plot(xs, slope * xs + intercept, "r--",
+                     label=f"linear fit (slope={slope:.2e})")
+            plt.xlabel("training step")
+            plt.ylabel("avg daily log-return")
             plt.title(f"{spec.name} - training trajectory (Figure 6 analog)")
             plt.legend()
             plt.tight_layout()
             plt.savefig(os.path.join(out_dir, "training_curve.png"), dpi=150)
             plt.close()
+
+    # Plot 5: training diagnostics (gradient norms, action stats, reward)
+    if history.diag_step:
+        ds = np.array(history.diag_step)
+        fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+        axes[0].plot(ds, history.diag_actor_grad_norm, label="actor")
+        axes[0].plot(ds, history.diag_critic_grad_norm, label="critic")
+        axes[0].set_ylabel("‖∇‖₂")
+        axes[0].set_yscale("log")
+        axes[0].legend()
+        axes[0].set_title(f"{spec.name} - training diagnostics")
+
+        axes[1].plot(ds, history.diag_cash_weight, label="cash weight")
+        axes[1].plot(ds, history.diag_risky_l1, label="Σ|risky weights|")
+        axes[1].set_ylabel("weight")
+        axes[1].legend()
+
+        axes[2].plot(ds, history.diag_reward, ".", alpha=0.5)
+        axes[2].axhline(0.0, color="k", lw=0.5)
+        axes[2].set_ylabel("per-step log-return")
+        axes[2].set_xlabel("training step")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "diagnostics.png"), dpi=150)
+        plt.close()
 
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump({"stocks": stocks, "summary": summary,

@@ -55,9 +55,14 @@ class DDPGConfig:
     gamma: float = 0.0
     tau: float = 5e-3             # target soft-update rate
     total_steps: int = 300_000    # paper: 300000 training steps
-    # Exploration noise: paper says N(mu=0.05, sigma=0.25)
+    # Exploration noise: the paper specifies N(mu=0.05, sigma=0.25) but does
+    # not anneal sigma.  In practice keeping sigma at 0.25 for the entire run
+    # prevents the agent from ever committing to a learned policy late in
+    # training, so we linearly decay sigma from `noise_std_start` at step
+    # `warmup_steps` down to `noise_std_end` at `total_steps`.
     noise_mean: float = 0.05
-    noise_std: float = 0.25
+    noise_std_start: float = 0.25
+    noise_std_end: float = 0.05
     warmup_steps: int = 1_000     # collect random transitions before learning
     update_every: int = 1
     # Multiplier applied to the per-step log-return before it is fed to the

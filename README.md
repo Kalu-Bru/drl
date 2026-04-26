@@ -89,6 +89,9 @@ python run_experiment.py --all --steps 300000
 python run_experiment.py --all --steps 10000
 ```
 
+git clone https://github.com/Kalu-Bru/drl.git
+
+
 Useful flags:
 
 | Flag                | Meaning                                                  |

@@ -36,8 +36,9 @@ class Transition:
 
 
 class ReplayBuffer:
-    def __init__(self, size: int):
+    def __init__(self, size: int, rng: np.random.Generator | None = None):
         self.buf: deque[Transition] = deque(maxlen=size)
+        self.rng = rng or np.random.default_rng()
 
     def __len__(self) -> int:
         return len(self.buf)
@@ -46,7 +47,7 @@ class ReplayBuffer:
         self.buf.append(Transition(*args))
 
     def sample(self, batch_size: int):
-        idx = np.random.randint(0, len(self.buf), size=batch_size)
+        idx = self.rng.integers(0, len(self.buf), size=batch_size)
         items = [self.buf[i] for i in idx]
         x = np.stack([it.x for it in items])
         w = np.stack([it.w for it in items])
@@ -85,14 +86,34 @@ class DDPGAgent:
         self.critic_opt = torch.optim.Adam(self.critic.parameters(),
                                            lr=self.cfg.critic_lr)
 
-        self.buffer = ReplayBuffer(self.cfg.replay_buffer_size)
+        # Single seeded RNG drives both exploration noise and replay sampling
+        # so that two runs with the same seed are byte-for-byte reproducible.
+        self.rng = np.random.default_rng(self.cfg.seed)
+        self.buffer = ReplayBuffer(self.cfg.replay_buffer_size, rng=self.rng)
+
+        # Diagnostics populated by ``learn()`` (pre-clip gradient norms).
+        self.last_actor_grad_norm: float = 0.0
+        self.last_critic_grad_norm: float = 0.0
 
         random.seed(self.cfg.seed)
         np.random.seed(self.cfg.seed)
         torch.manual_seed(self.cfg.seed)
 
     # ------------------------------------------------------------------
-    def select_action(self, state, explore: bool = True) -> np.ndarray:
+    def _noise_std(self, step: int | None) -> float:
+        """Linear interpolation from noise_std_start at warmup -> noise_std_end
+        at total_steps.  Falls back to noise_std_start if ``step`` is None
+        (e.g. when called during a quick smoke test)."""
+        if step is None:
+            return float(self.cfg.noise_std_start)
+        denom = max(1, self.cfg.total_steps - self.cfg.warmup_steps)
+        frac = (step - self.cfg.warmup_steps) / denom
+        frac = float(min(1.0, max(0.0, frac)))
+        return (1.0 - frac) * self.cfg.noise_std_start \
+            + frac * self.cfg.noise_std_end
+
+    def select_action(self, state, explore: bool = True,
+                      step: int | None = None) -> np.ndarray:
         x, w = state
         x_t = torch.from_numpy(x).unsqueeze(0).to(self.device)
         w_t = torch.from_numpy(w).unsqueeze(0).to(self.device)
@@ -101,8 +122,8 @@ class DDPGAgent:
             a = self.actor(x_t).squeeze(0).cpu().numpy()
         self.actor.train()
         if explore:
-            noise = np.random.normal(self.cfg.noise_mean,
-                                     self.cfg.noise_std, size=a.shape)
+            sigma = self._noise_std(step)
+            noise = self.rng.normal(self.cfg.noise_mean, sigma, size=a.shape)
             a = a + noise.astype(np.float32)
             a[0] = max(a[0], 0.0)
             denom = float(np.sum(np.abs(a)))
@@ -120,6 +141,14 @@ class DDPGAgent:
 
     # ------------------------------------------------------------------
     def learn(self) -> Tuple[float, float]:
+        """Run one critic + actor update.
+
+        Returns ``(critic_loss, actor_loss)``.  The most recent **pre-clip**
+        gradient norms are stashed on ``self.last_actor_grad_norm`` and
+        ``self.last_critic_grad_norm`` for diagnostics; reading them after
+        the call is safe and reflects the unclipped gradient that the
+        optimiser actually saw.
+        """
         if len(self.buffer) < self.cfg.batch_size:
             return 0.0, 0.0
         x, w, a, r, xn, wn, d = self.buffer.sample(self.cfg.batch_size)
@@ -141,7 +170,12 @@ class DDPGAgent:
         critic_loss = F.mse_loss(q, target)
         self.critic_opt.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
+        # ``clip_grad_norm_`` returns the pre-clip total norm, which is the
+        # diagnostic we actually want.  Recording it here (before the actor
+        # backward pass adds extra gradients into critic.grad) gives a clean
+        # measurement.
+        self.last_critic_grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0))
         self.critic_opt.step()
 
         # Actor update (maximise Q)
@@ -149,7 +183,8 @@ class DDPGAgent:
         actor_loss = -self.critic(x, a_pred).mean()
         self.actor_opt.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        self.last_actor_grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0))
         self.actor_opt.step()
 
         self.soft_update(self.actor_target, self.actor)

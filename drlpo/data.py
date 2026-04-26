@@ -90,7 +90,24 @@ def download_many(tickers: List[str], start: str = "2005-01-01",
     panel = pd.concat(frames, axis=1)
     panel.columns.names = ["ticker", "field"]
     panel = panel.swaplevel(0, 1, axis=1).sort_index(axis=1)
-    panel = panel.ffill().fillna(0.0)
+
+    # Drop the leading rows where ANY ticker has not yet listed.  Filling
+    # leading NaNs with 0 (the previous behaviour) would create artificial
+    # price ratios at the listing date and silently bias the agent.  Forward-
+    # fill is still applied to fill mid-series gaps (holidays, halts).
+    close_panel = panel["Close"]
+    first_valid = close_panel.apply(lambda s: s.first_valid_index()).max()
+    if first_valid is not None:
+        panel = panel.loc[first_valid:]
+    panel = panel.ffill()
+
+    # If anything remains NaN at this point, a ticker has a *trailing* gap
+    # (delisted mid-window) -- raising is safer than zero-filling.
+    if panel.isna().any().any():
+        bad = panel.columns[panel.isna().any()].tolist()
+        raise ValueError(
+            f"download_many: NaNs remain after ffill in columns {bad}; the "
+            f"underlying ticker likely delisted inside the requested window.")
     return panel
 
 

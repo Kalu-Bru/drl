@@ -1,12 +1,10 @@
 """Training and back-testing logic."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Tuple
 
 import numpy as np
-import torch
 from tqdm import trange
 
 from .config import DDPGConfig, EPISODE_STEPS
@@ -20,6 +18,13 @@ class TrainHistory:
     avg_daily_log_returns: list[float]
     critic_losses: list[float]
     actor_losses: list[float]
+    # Diagnostics sampled every ``diag_every`` learning steps.
+    diag_step: list[int]
+    diag_actor_grad_norm: list[float]
+    diag_critic_grad_norm: list[float]
+    diag_cash_weight: list[float]
+    diag_risky_l1: list[float]
+    diag_reward: list[float]
 
 
 def _uniform_random_action(m: int, rng: np.random.Generator) -> np.ndarray:
@@ -37,9 +42,9 @@ def _uniform_random_action(m: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def train(env: PortfolioEnv, agent: DDPGAgent, cfg: DDPGConfig | None = None,
-          progress: bool = True) -> TrainHistory:
+          progress: bool = True, diag_every: int = 1000) -> TrainHistory:
     cfg = cfg or agent.cfg
-    history = TrainHistory([], [], [], [])
+    history = TrainHistory([], [], [], [], [], [], [], [], [], [])
     rng = env.rng
 
     state = env.reset()
@@ -51,7 +56,7 @@ def train(env: PortfolioEnv, agent: DDPGAgent, cfg: DDPGConfig | None = None,
         if step < cfg.warmup_steps:
             a = _uniform_random_action(env.m, rng)
         else:
-            a = agent.select_action(state, explore=True)
+            a = agent.select_action(state, explore=True, step=step)
 
         next_state, r, done, info = env.step(a)
 
@@ -70,6 +75,25 @@ def train(env: PortfolioEnv, agent: DDPGAgent, cfg: DDPGConfig | None = None,
             cl, al = agent.learn()
             history.critic_losses.append(cl)
             history.actor_losses.append(al)
+
+            if diag_every > 0 and step % diag_every == 0:
+                history.diag_step.append(step)
+                # Use the pre-clip norms recorded inside ``learn()``;
+                # reading p.grad after the actor backward would double-count
+                # gradients that flow through the critic on their way to
+                # the actor.
+                history.diag_actor_grad_norm.append(
+                    agent.last_actor_grad_norm)
+                history.diag_critic_grad_norm.append(
+                    agent.last_critic_grad_norm)
+                history.diag_cash_weight.append(float(info.weights[0]))
+                history.diag_risky_l1.append(
+                    float(np.sum(np.abs(info.weights[1:]))))
+                history.diag_reward.append(float(r))
+                if progress and hasattr(iterator, "set_postfix"):
+                    iterator.set_postfix(cl=f"{cl:.2e}",
+                                         al=f"{al:.2e}",
+                                         cash=f"{info.weights[0]:.2f}")
 
         state = next_state
         if done:
