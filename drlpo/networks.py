@@ -3,8 +3,8 @@
 The architecture follows the spec:
 
 Actor:
-    input  : (B, features, windows, assets)                              # = (B, 4, n, m)
-    conv block 1: Conv2d(4 -> 64, k=3, s=1, pad=2) + ReLU + MaxPool2d(2, ceil_mode=True)
+    input  : (B, features, windows, assets)                              # = (B, f, n, m)
+    conv block 1: Conv2d(f -> 64, k=3, s=1, pad=2) + ReLU + MaxPool2d(2, ceil_mode=True)
     conv block 2: Conv2d(64 -> 64, k=3, s=1, pad=1) + ReLU + MaxPool2d(2, ceil_mode=True)
     conv block 3: Conv2d(64 -> 128, k=3, s=1, pad=1) + ReLU + MaxPool2d(2, ceil_mode=True)
     flatten
@@ -18,7 +18,7 @@ Critic:
     input  : (B, features+1, windows, assets)
         the action vector W_t (cash dropped) is broadcast along the window
         axis as an extra channel, exactly as in Figure 5 of the paper.
-    same conv stack as the Actor (in channels = features + 1 = 5)
+    same conv stack as the Actor (in channels = features + 1)
     flatten
     fully-connected: flat -> 64 -> 32 -> 1
     output: scalar Q value (no activation).
@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+
+from .config import NUM_FEATURES
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +102,7 @@ class Actor(nn.Module):
     """VGG-style policy network outputting a weight vector of size (m+1)."""
 
     def __init__(self, num_assets: int, window: int = 50,
-                 num_features: int = 4, dropout: float = 0.1):
+                 num_features: int = NUM_FEATURES, dropout: float = 0.1):
         super().__init__()
         self.num_assets = num_assets
         self.window = window
@@ -141,7 +143,7 @@ class Critic(nn.Module):
     """
 
     def __init__(self, num_assets: int, window: int = 50,
-                 num_features: int = 4, dropout: float = 0.1):
+                 num_features: int = NUM_FEATURES, dropout: float = 0.1):
         super().__init__()
         self.num_assets = num_assets
         self.window = window

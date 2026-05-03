@@ -8,7 +8,7 @@ constituents as the random stock pool).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 
@@ -34,8 +34,15 @@ STOCK_POOL: List[str] = [
 # Environment hyper-parameters (paper Section 2 + 4)
 # ---------------------------------------------------------------------------
 WINDOW: int = 50               # n = 50 (observation window in trading days)
-NUM_FEATURES: int = 4          # close, high, low, open
-TRANSACTION_COST: float = 0.0025  # mu_t in the paper
+FEATURE_NAMES: List[str] = [
+    "close", "high", "low", "open",
+    "mom_5d", "mom_20d", "vol_20d", "rel_strength_20d",
+    "dist_52w_high",
+]
+NUM_FEATURES: int = len(FEATURE_NAMES)
+# 5 bp per rebalance.  The paper used 25 bp, but that cost level makes daily
+# state-dependent rebalancing economically impossible on US mega-cap data.
+TRANSACTION_COST: float = 0.0005
 EPISODE_STEPS: int = 252       # 1 trading-year per episode (paper Section 4.2)
 
 
@@ -44,15 +51,13 @@ EPISODE_STEPS: int = 252       # 1 trading-year per episode (paper Section 4.2)
 # ---------------------------------------------------------------------------
 @dataclass
 class DDPGConfig:
-    replay_buffer_size: int = 600
+    replay_buffer_size: int = 100_000
     batch_size: int = 64
-    actor_lr: float = 4e-5
+    actor_lr: float = 2e-5
     critic_lr: float = 5e-4
-    # The portfolio reward (daily log-return) is essentially myopic given the
-    # current state, so we use gamma ~= 0 (the paper does not specify gamma).
-    # A higher value would make the critic target depend on the bootstrapped
-    # Q of the next state, which is initially garbage and tends to diverge.
-    gamma: float = 0.0
+    # With engineered momentum/volatility state we can use temporal credit
+    # assignment again instead of the earlier contextual-bandit approximation.
+    gamma: float = 0.9
     tau: float = 5e-3             # target soft-update rate
     total_steps: int = 300_000    # paper: 300000 training steps
     # Exploration noise: the paper specifies N(mu=0.05, sigma=0.25) but does

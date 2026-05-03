@@ -16,8 +16,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .config import DDPGConfig, EPISODE_STEPS
-from .env import PortfolioEnv
+from .config import DDPGConfig, NUM_FEATURES
 from .networks import Actor, Critic
 
 
@@ -65,18 +64,22 @@ class ReplayBuffer:
 class DDPGAgent:
     def __init__(self, num_assets: int, window: int,
                  cfg: DDPGConfig | None = None,
-                 device: str | torch.device = "cpu"):
+                 device: str | torch.device = "cpu",
+                 num_features: int = NUM_FEATURES):
         self.cfg = cfg or DDPGConfig()
         self.device = torch.device(device)
         self.num_assets = num_assets
         self.window = window
+        self.num_features = num_features
 
-        self.actor = Actor(num_assets, window).to(self.device)
+        self.actor = Actor(num_assets, window,
+                           num_features=num_features).to(self.device)
         self.actor_target = copy.deepcopy(self.actor).to(self.device)
         for p in self.actor_target.parameters():
             p.requires_grad = False
 
-        self.critic = Critic(num_assets, window).to(self.device)
+        self.critic = Critic(num_assets, window,
+                             num_features=num_features).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
         for p in self.critic_target.parameters():
             p.requires_grad = False

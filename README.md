@@ -19,10 +19,11 @@ instead and substitutes:
 | `CSI300` index       | `SPY` ETF (S&P 500) |
 | Random CSI300 stocks | Random S&P 500 stocks (50-name pool, all listed before 2010-12-31) |
 
-Apart from the universe, every formula and hyper-parameter from the paper is
-preserved (window n=50, transaction cost μ=0.0025, replay buffer 600,
-batch 64, lr 5e-4 / 4e-5, exploration noise N(0.05, 0.25), 252-day episodes,
-arbitrage rule, sum |w_i| = 1, etc.).
+The project started as a paper reproduction.  The current default
+configuration is a research extension aimed at better out-of-sample behaviour:
+it keeps the DDPG/portfolio mechanics but adds causal factor features, lower
+transaction cost, a larger replay buffer, γ=0.9, and walk-forward / ensemble
+evaluation.
 
 ---
 
@@ -32,7 +33,7 @@ arbitrage rule, sum |w_i| = 1, etc.).
 drlpo/
   __init__.py
   config.py        # All hyper-parameters and the four "Stochastic Portfolio" specs
-  data.py          # Yahoo-Finance download + cache, builds the (T, 4, m) price tensor
+  data.py          # Yahoo-Finance download + cache, builds the (T, features, m) tensor
   env.py           # PortfolioEnv: state / action / reward (Sec. 2 of the paper)
   networks.py      # VGG-style Actor & Critic (Figures 3-5 of the paper)
   ddpg.py          # DDPG agent + replay buffer + soft target updates
@@ -40,6 +41,7 @@ drlpo/
   metrics.py       # Sharpe / Sortino / MDD (Sec. 4.3)
   multifactor.py   # Multi-factor benchmark from Sec. 4.5
 run_experiment.py  # Top-level runner ("python run_experiment.py --all")
+run_walkforward.py # 2-year train / 6-month test sliding-window ensemble runner
 scripts/
   smoke_test.py    # Quick sanity check of every component
 data/              # Cached CSV files from Yahoo Finance (created on demand)
@@ -89,8 +91,15 @@ python run_experiment.py --all --steps 300000
 python run_experiment.py --all --steps 10000
 ```
 
-git clone https://github.com/Kalu-Bru/drl.git
+Research-mode walk-forward ensemble run (expensive; smoke-test first):
 
+```bash
+# Cheap sanity check: 1 fold, 2 seeds, 30 steps
+python run_walkforward.py --portfolio 1 --steps 30 --ensemble-seeds 2 --max-folds 1 --no-progress
+
+# Full research run: 2-year train, 6-month test, monthly stride, 16 seeds/fold
+python run_walkforward.py --all --steps 300000 --ensemble-seeds 16
+```
 
 Useful flags:
 
@@ -102,6 +111,17 @@ Useful flags:
 | `--no-multifactor`  | Skip the Section 4.5 multi-factor benchmark            |
 | `--device`          | `cpu`, `cuda`, or `mps` (defaults to the best available)|
 
+`run_walkforward.py` also supports:
+
+| Flag                | Meaning                                                  |
+| ------------------- | -------------------------------------------------------- |
+| `--ensemble-seeds`  | Number of independent agents per fold (default: 16)      |
+| `--train-years`     | Rolling training-window length (default: 2)              |
+| `--test-months`     | Out-of-sample test-window length (default: 6)            |
+| `--stride-months`   | Calendar stride between folds (default: 1)               |
+| `--max-folds`       | Limit folds for smoke tests                              |
+| `--no-progress`     | Disable tqdm bars for cleaner remote logs                |
+
 For each experiment the runner writes to `results/Stochastic_Portfolio_N/`:
 
 * `metrics.csv`        - DRL vs. SPY vs. multi-factor performance table
@@ -111,6 +131,14 @@ For each experiment the runner writes to `results/Stochastic_Portfolio_N/`:
 * `training_curve.png` - Per-episode mean log-return regression (Figure 6)
 * `summary.json`       - Picked stocks + full numeric summary
 * `checkpoints/ddpg.pt` - PyTorch state-dict of the trained Actor/Critic
+
+Walk-forward results are written to
+`results_walkforward/Stochastic_Portfolio_N/` with one subdirectory per fold
+and aggregate files:
+
+* `fold_metrics.csv`
+* `aggregate_metrics.csv`
+* `walkforward_sharpe.png`
 
 ---
 
@@ -123,13 +151,13 @@ For each experiment the runner writes to `results/Stochastic_Portfolio_N/`:
 | (4) sum |w_i| = 1                 | `PortfolioEnv._project_weights` & `minmax_action`|
 | (5)/(6) Arbitrage rule            | `PortfolioEnv._project_weights`                   |
 | (7) Relative price Y_t            | `y_full` in `PortfolioEnv.step`                   |
-| (8) Portfolio value (no cost)     | `log_growth` in `PortfolioEnv.step`               |
+| (8) Portfolio value (no cost)     | `gross` in `PortfolioEnv.step`                    |
 | (9) Daily log return              | `log_ret` in `PortfolioEnv.step`                  |
 | (10) Weight evolution W_t'        | `w_evolved` in `PortfolioEnv.step`                |
 | (11) Transaction cost C_t         | `c_t` in `PortfolioEnv.step`                      |
 | (12) Portfolio value (with cost)  | `new_pv` in `PortfolioEnv.step`                   |
 | Min-max actor activation          | `minmax_action` in `networks.py`                  |
-| Critic input augmentation Fig. 5  | `Critic.forward` in `networks.py` (W is broadcast as a 5th channel) |
+| Critic input augmentation Fig. 5  | `Critic.forward` in `networks.py` (W is broadcast as an extra channel) |
 
 ---
 
@@ -147,6 +175,16 @@ For each experiment the runner writes to `results/Stochastic_Portfolio_N/`:
   trailing 252-day return) for the value factor. The turnover factor is
   computed exactly as described (volume × close, 20-day rolling mean).
 
+* **Research-mode features**: the state now includes the paper's adjusted OHLC
+  channels plus 5-day momentum, 20-day momentum, 20-day annualised volatility,
+  20-day relative strength vs. SPY, and distance from the 52-week high.  These
+  features are computed causally from historical prices only.
+
+* **Research-mode hyper-parameters**: default transaction cost is 5 bp
+  (`0.0005`), replay buffer is 100k, γ is 0.9, and actor LR is `2e-5`.  These
+  are deliberate deviations from the paper-style settings to support
+  state-dependent out-of-sample trading.
+
 * **Trading days per episode**: the paper trains on 252-day samples drawn
   randomly from the full training set (`drlpo/env.py`'s `random_start=True`).
   Back-testing replays the entire test window with `random_start=False`.
@@ -163,3 +201,4 @@ DDPG with a small VGG-like backbone is light enough to train on CPU; on an
 M1/M2 Mac you can also pass `--device mps` to use the Apple GPU. The full
 300 000-step run takes on the order of a few hours per portfolio on CPU and
 considerably less on a CUDA GPU.
+

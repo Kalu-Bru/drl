@@ -1,9 +1,10 @@
 """Data loading from Yahoo Finance.
 
-Equivalent role of the Wind database used in the paper.  We download daily
-OHLC data for a list of tickers (m stocks + the market benchmark), align them
-on a common business-day calendar and forward / zero fill missing values
-(the paper fills missing values with zero).
+Equivalent role of the Wind database used in the paper.  We download adjusted
+daily OHLC data, align all assets on a common calendar, and build the model's
+feature tensor.  The first four channels are the paper's OHLC price channels;
+the remaining channels are causal hand-engineered signals intended to make the
+policy less dependent on static in-sample winners/losers.
 """
 from __future__ import annotations
 
@@ -13,6 +14,8 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+from .config import FEATURE_NAMES
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -113,16 +116,50 @@ def download_many(tickers: List[str], start: str = "2005-01-01",
 
 def build_price_arrays(panel: pd.DataFrame, tickers: List[str]
                        ) -> Tuple[np.ndarray, pd.DatetimeIndex]:
-    """Pack the price panel into a (T, 4, m) numpy tensor.
+    """Pack the price panel into a ``(T, features, m)`` numpy tensor.
 
-    The 4 features are [close, high, low, open] -- exactly the order used in
-    the paper (V^(cl), V^(hi), V^(lo), V^(op))."""
+    Feature order is defined by ``config.FEATURE_NAMES``:
+
+    1. adjusted close/high/low/open (later converted to price-relative state
+       inside the environment, matching the paper)
+    2. 5-day momentum: ``close_t / close_{t-5} - 1``
+    3. 20-day momentum
+    4. 20-day rolling volatility of daily returns (annualised)
+    5. 20-day relative strength vs the market column (last ticker)
+    6. distance from 52-week high: ``close / rolling_max_252 - 1``
+
+    All engineered features are causal: each row uses only information up to
+    and including that date.  Early-window NaNs are filled with zero, meaning
+    "not enough history yet" rather than an artificial price.
+    """
     fields = ["Close", "High", "Low", "Open"]
     arrs = []
     for f in fields:
         sub = panel[f][tickers].values  # (T, m)
         arrs.append(sub)
-    arr = np.stack(arrs, axis=1)  # (T, 4, m)
+
+    close = panel["Close"][tickers].astype(float)
+    returns = close.pct_change()
+    mom_5d = close.pct_change(5)
+    mom_20d = close.pct_change(20)
+    vol_20d = returns.rolling(20, min_periods=5).std() * np.sqrt(252)
+    market_mom_20d = mom_20d.iloc[:, -1]
+    rel_strength_20d = mom_20d.sub(market_mom_20d, axis=0)
+    high_52w = close.rolling(252, min_periods=20).max()
+    dist_52w_high = close / high_52w - 1.0
+
+    engineered = [
+        mom_5d, mom_20d, vol_20d, rel_strength_20d, dist_52w_high,
+    ]
+    for feat in engineered:
+        clean = feat.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        arrs.append(clean[tickers].values)
+
+    arr = np.stack(arrs, axis=1)  # (T, len(FEATURE_NAMES), m)
+    if arr.shape[1] != len(FEATURE_NAMES):
+        raise RuntimeError(
+            f"feature mismatch: built {arr.shape[1]}, expected "
+            f"{len(FEATURE_NAMES)}")
     return arr.astype(np.float32), panel.index
 
 

@@ -59,11 +59,13 @@ def run_one(spec, total_steps: int, device: str, do_multifactor: bool = True):
     panel = download_many(tickers,
                           start=spec.train_start, end=spec.test_end)
     panel.index = pd.to_datetime(panel.index)
-    train_panel = panel.loc[spec.train_start: spec.train_end]
-    test_panel = panel.loc[spec.test_start: spec.test_end]
-
-    train_prices, train_dates = build_price_arrays(train_panel, tickers)
-    test_prices, test_dates = build_price_arrays(test_panel, tickers)
+    full_prices, full_dates = build_price_arrays(panel, tickers)
+    train_mask = ((full_dates >= pd.Timestamp(spec.train_start))
+                  & (full_dates <= pd.Timestamp(spec.train_end)))
+    test_mask = ((full_dates >= pd.Timestamp(spec.test_start))
+                 & (full_dates <= pd.Timestamp(spec.test_end)))
+    train_prices, train_dates = full_prices[train_mask], full_dates[train_mask]
+    test_prices, test_dates = full_prices[test_mask], full_dates[test_mask]
 
     print(f"  train tensor: {train_prices.shape}, "
           f"test tensor: {test_prices.shape}")

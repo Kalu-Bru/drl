@@ -5,11 +5,12 @@ Huang, Zhou & Song.
 
 State:
     S_t = (X_t, W_t)
-    X_t is a (4, m, n) tensor of price ratios
+    X_t is a (features, m, n) tensor
         feature 0 (close): [v_{t-n+1}/v_t, ..., v_{t-1}/v_t, 1]
         feature 1 (high) : [v^hi_{t-n+1}/v_t, ..., v^hi_{t-1}/v_t, v^hi_t/v_t]
         feature 2 (low)  : analogous
         feature 3 (open) : analogous
+        remaining features: causal engineered signals copied over the window
     W_t is the (m+1,) weight vector at time t (cash + m risk assets).
 
 Action:
@@ -43,8 +44,9 @@ class PortfolioEnv:
     """Trading environment.
 
     Args:
-        price_tensor: (T, 4, m) numpy array, features in order close, high,
-            low, open.  The last column ``m-1`` MUST be the market benchmark.
+        price_tensor: (T, features, m) numpy array.  The first four features
+            are close/high/low/open; later features are already-normalised
+            indicators.  The last column ``m-1`` MUST be the market benchmark.
         window: lookback window n (=50 in the paper).
         transaction_cost: per-trade cost mu_t (=0.0025 in the paper).
         episode_steps: number of trading days per episode (=252 in the paper).
@@ -60,7 +62,7 @@ class PortfolioEnv:
                  random_start: bool = True,
                  rng: Optional[np.random.Generator] = None):
         assert price_tensor.ndim == 3, \
-            "expected (T, 4, m) tensor"
+            "expected (T, features, m) tensor"
         assert price_tensor.shape[1] == NUM_FEATURES
         self.prices = price_tensor.astype(np.float32)
         self.T, _, self.m = self.prices.shape
@@ -81,7 +83,7 @@ class PortfolioEnv:
     # State construction
     # ------------------------------------------------------------------
     def _build_state(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (X_t, W_t) where X_t has shape (4, m, window)."""
+        """Return (X_t, W_t) where X_t has shape (features, m, window)."""
         t = self._t
         n = self.window
         # closes used as the divisor v_t  (shape (m,))
@@ -97,6 +99,11 @@ class PortfolioEnv:
             f_idx = fi  # high=1, low=2, open=3
             hist = self.prices[t - n + 1: t + 1, f_idx, :]   # (n, m)
             feats[fi, :, :] = (hist / v_t).T
+        if NUM_FEATURES > 4:
+            # Engineered signals are already dimensionless and causal at each
+            # row, so copying the trailing window is the correct state view.
+            engineered = self.prices[t - n + 1: t + 1, 4:, :]  # (n, f-4, m)
+            feats[4:, :, :] = engineered.transpose(1, 2, 0)
         return feats, self.weights.copy()
 
     # ------------------------------------------------------------------
